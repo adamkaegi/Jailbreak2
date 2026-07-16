@@ -26,15 +26,10 @@ from collections.abc import Sequence
 
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import (
-    Runnable,
-    RunnableBranch,
-    RunnableLambda,
-    RunnablePassthrough,
-)
+from langchain_core.runnables import Runnable, RunnableLambda
 
 from attacks.base import Attack
-from defenses.base import Defense, DefenseResult
+from defenses.base import Defense
 
 
 def _make_model(model_name: str, dry_run: bool) -> Runnable:
@@ -54,43 +49,13 @@ def _make_model(model_name: str, dry_run: bool) -> Runnable:
 
 
 def _defense_step(defense: Defense) -> Runnable:
-    """Wrap a Defense as a block-aware Runnable step in the chain.
+    """Wrap a Defense as a Runnable step in the chain.
 
     `defense=defense` captures the current loop value immediately. Without
     it, every step's lambda would share one `defense` variable and all of
     them would run the *last* defense in the list once the loop finished.
     """
-
-    def apply_defense(state: dict, defense: Defense = defense) -> dict:
-        if state["blocked"]:
-            return state
-
-        raw_result = defense.apply_with_context(
-            state["text"],
-            original_prompt=state["original_prompt"],
-            model_prompt=state["model_prompt"],
-        )
-        result = (
-            raw_result
-            if isinstance(raw_result, DefenseResult)
-            else DefenseResult(raw_result)
-        )
-        if not isinstance(result.text, str):
-            raise TypeError(f"Defense '{defense.name}' returned non-string text")
-
-        updated = dict(state)
-        updated["text"] = result.text
-        updated["blocked"] = result.blocked
-        if result.blocked:
-            updated["blocked_by"] = defense.name
-        if result.metadata:
-            updated["defense_metadata"] = {
-                **state["defense_metadata"],
-                defense.name: result.metadata,
-            }
-        return updated
-
-    return RunnableLambda(apply_defense)
+    return RunnableLambda(lambda text, defense=defense: defense.apply(text))
 
 
 def build_chain(
@@ -109,34 +74,15 @@ def build_chain(
     prompt_template = ChatPromptTemplate.from_messages([("user", "{text}")])
     model = _make_model(model_name, dry_run)
 
-    chain = RunnableLambda(
-        lambda prompt: {
-            "original_prompt": prompt,
-            "text": attack.apply(prompt),
-            "model_prompt": None,
-            "blocked": False,
-            "blocked_by": None,
-            "defense_metadata": {},
-        }
-    )
+    chain = RunnableLambda(attack.apply)
     for defense in input_defenses:
         chain = chain | _defense_step(defense)
 
-    model_step = RunnablePassthrough.assign(
-        model_prompt=RunnableLambda(lambda state: state["text"]),
-        text=(
-            RunnableLambda(lambda state: {"text": state["text"]})
-            | prompt_template
-            | model
-            | StrOutputParser()
-        ),
-    )
-    chain = chain | RunnableBranch(
-        (lambda state: state["blocked"], RunnableLambda(lambda state: state)),
-        model_step,
-    )
+    # ChatPromptTemplate needs a dict of template variables, so re-wrap the
+    # plain string as {"text": ...} before it reaches the template.
+    chain = chain | RunnableLambda(lambda text: {"text": text}) | prompt_template | model | StrOutputParser()
 
     for defense in output_defenses:
         chain = chain | _defense_step(defense)
 
-    return chain | RunnableLambda(lambda state: state["text"])
+    return chain
