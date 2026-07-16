@@ -43,9 +43,6 @@ scripts/     shell scripts that run main.py multiple times consecutively
 
 - **Defense** `smoothllm` (input) — generates multiple perturbed prompt variants, scores them, and selects one from the majority class
 - **Defense** `self_reminder` (input) — wraps the prompt with a responsible-assistant prefix and a safety-review suffix; both are overridable on the defense constructor
-- **Defense** `perplexity` (input) — scores the attacked prompt with local GPT-2 and blocks scores above the configured threshold
-- **Defense** `llama_guard_input` (input) — classifies the model-facing prompt with Llama Guard and skips target inference when unsafe
-- **Defense** `llama_guard_output` (output) — classifies the prompt/response pair and replaces unsafe model output
 
 ## Judges
 
@@ -63,11 +60,7 @@ python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ollama serve # separate terminal
 ollama pull llama3.2:3b # whatever model configured
-ollama pull llama-guard3:1b
 ```
-
-The perplexity filter downloads the configured Hugging Face model (`gpt2` by
-default) on first use and then reuses the local cache.
 
 ## Local Langfuse
 
@@ -111,23 +104,7 @@ python main.py                                        # batch from config.py
 python main.py --batch instructions --defense sample_bye_adam_input,sample_bye_adam_output
 python main.py --judge sample_safe_unsafe              # judge final model output
 python main.py --dry-run                              # no Ollama, tests wiring
-
-# Perplexity input filtering
-python main.py "Your prompt" --attack none --defense perplexity
-
-# Llama Guard input or output filtering
-python main.py "Your prompt" --attack none --defense llama_guard_input
-python main.py "Your prompt" --attack none --defense llama_guard_output
-
-# Compose both Guard stages, optionally after perplexity
-python main.py "Your prompt" --attack none --defense llama_guard_input,llama_guard_output
-python main.py "Your prompt" --attack none --defense perplexity,llama_guard_input,llama_guard_output
 ```
-
-Input filters can return a block decision, which prevents the target model call.
-Output filters run only after target generation and can replace the response.
-Thresholds, model names, blocked responses, and failure policies live in
-`config.py`.
 
 ## Adding real components later
 
