@@ -6,7 +6,8 @@ from time import perf_counter
 from typing import Any
 
 import config
-from .base import Defense, DefenseResult
+from .base import Defense
+from .block import DefenseBlocked
 
 
 _VALID_FAILURE_POLICIES = {"allow", "block", "raise"}
@@ -78,17 +79,10 @@ def build_input_guard_conversation(text: str) -> list[dict[str, str]]:
     return [{"role": "user", "content": text}]
 
 
-def build_output_guard_conversation(
-    prompt: str, response: str
-) -> list[dict[str, str]]:
-    if not isinstance(prompt, str):
-        raise TypeError("model prompt must be a string")
+def build_output_guard_conversation(response: str) -> list[dict[str, str]]:
     if not isinstance(response, str):
         raise TypeError("target response must be a string")
-    return [
-        {"role": "user", "content": prompt},
-        {"role": "assistant", "content": response},
-    ]
+    return [{"role": "assistant", "content": response}]
 
 
 class GuardClassifier:
@@ -160,13 +154,11 @@ class _LlamaGuardDefense(Defense):
             raise RuntimeError(f"Llama Guard {self.stage} classification failed: {detail}")
         return self.failure_policy
 
-    def _result(
+    def _apply_decision(
         self,
         text: str,
         decision: GuardDecision,
-        *,
-        original_response: str | None = None,
-    ) -> DefenseResult:
+    ) -> str:
         blocked = self._action(decision) == "block"
         metadata = {
             "stage": self.stage,
@@ -176,13 +168,15 @@ class _LlamaGuardDefense(Defense):
             "failure_policy": self.failure_policy,
             "decision": decision.to_dict(),
         }
-        if original_response is not None:
-            metadata["original_response"] = original_response
-        return DefenseResult(
-            self.blocked_response if blocked else text,
-            blocked=blocked,
-            metadata=metadata,
-        )
+        if not blocked:
+            return text
+        if self.stage == "input":
+            raise DefenseBlocked(
+                self.blocked_response,
+                defense_name=self.name,
+                metadata=metadata,
+            )
+        return self.blocked_response
 
 
 class LlamaGuardInputDefense(_LlamaGuardDefense):
@@ -191,10 +185,10 @@ class LlamaGuardInputDefense(_LlamaGuardDefense):
     name = "llama_guard_input"
     stage = "input"
 
-    def apply(self, text: str) -> DefenseResult:
+    def apply(self, text: str) -> str:
         conversation = build_input_guard_conversation(text)
         decision = self.classifier.classify_conversation(conversation)
-        return self._result(text, decision)
+        return self._apply_decision(text, decision)
 
 
 class LlamaGuardOutputDefense(_LlamaGuardDefense):
@@ -203,22 +197,10 @@ class LlamaGuardOutputDefense(_LlamaGuardDefense):
     name = "llama_guard_output"
     stage = "output"
 
-    def apply(self, text: str) -> DefenseResult:
-        # Direct calls have no model prompt. The pipeline uses
-        # apply_with_context(), which supplies the actual model-facing prompt.
-        return self.apply_with_context(text, original_prompt="", model_prompt=None)
-
-    def apply_with_context(
-        self,
-        text: str,
-        *,
-        original_prompt: str,
-        model_prompt: str | None,
-    ) -> DefenseResult:
-        prompt = model_prompt if model_prompt is not None else original_prompt
-        conversation = build_output_guard_conversation(prompt, text)
+    def apply(self, text: str) -> str:
+        conversation = build_output_guard_conversation(text)
         decision = self.classifier.classify_conversation(conversation)
-        return self._result(text, decision, original_response=text)
+        return self._apply_decision(text, decision)
 
 
 def _response_stats(response: Any, latency_s: float) -> dict[str, float | int]:

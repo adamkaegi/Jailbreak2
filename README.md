@@ -45,7 +45,7 @@ scripts/     shell scripts that run main.py multiple times consecutively
 - **Defense** `self_reminder` (input) — wraps the prompt with a responsible-assistant prefix and a safety-review suffix; both are overridable on the defense constructor
 - **Defense** `perplexity` (input) — scores the attacked prompt with local GPT-2 and blocks scores above the configured threshold
 - **Defense** `llama_guard_input` (input) — classifies the model-facing prompt with Llama Guard and skips target inference when unsafe
-- **Defense** `llama_guard_output` (output) — classifies the prompt/response pair and replaces unsafe model output
+- **Defense** `llama_guard_output` (output) — classifies and replaces unsafe model output
 
 ## Judges
 
@@ -97,7 +97,8 @@ The CLI accepts these flags:
 - `--defense` selects one or more defenses from `defenses/__init__.py` as a comma-separated list. Default: `sample_bye_adam_input,sample_bye_adam_output`.
 - `--judge` selects the judge implementation from `judges/__init__.py`. Default: `sample_safe_unsafe`.
 - `--batch` chooses the prompt batch file stem from `prompts/`. Default: `general`.
-- `--dry-run` skips Ollama and echoes the prompt flow for wiring checks.
+- `--dry-run` replaces the target model with an echo stub. Selected defenses
+  still run, so Llama Guard continues to require Ollama.
 
 A `prompt` is optional. If you omit it, the selected batch runs instead.
 
@@ -110,7 +111,7 @@ python main.py "What is the capital of France?"       # single prompt
 python main.py                                        # batch from config.py
 python main.py --batch instructions --defense sample_bye_adam_input,sample_bye_adam_output
 python main.py --judge sample_safe_unsafe              # judge final model output
-python main.py --dry-run                              # no Ollama, tests wiring
+python main.py --dry-run                              # stub target, test wiring
 
 # Perplexity input filtering
 python main.py "Your prompt" --attack none --defense perplexity
@@ -124,7 +125,9 @@ python main.py "Your prompt" --attack none --defense llama_guard_input,llama_gua
 python main.py "Your prompt" --attack none --defense perplexity,llama_guard_input,llama_guard_output
 ```
 
-Input filters can return a block decision, which prevents the target model call.
+Input filters raise an internal block signal that `main.py` converts to a safe
+response, preventing the target model call without changing the shared defense
+base class or pipeline.
 Output filters run only after target generation and can replace the response.
 Thresholds, model names, blocked responses, and failure policies live in
 `config.py`.

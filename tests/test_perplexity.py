@@ -2,6 +2,7 @@
 
 import pytest
 
+from defenses.block import DefenseBlocked
 from defenses.perplexity import PerplexityDefense, PerplexityResult
 
 
@@ -35,20 +36,20 @@ def test_score_at_or_below_threshold_is_allowed(score):
 
     result = defense.apply("hello")
 
-    assert result.text == "hello"
-    assert result.blocked is False
+    assert result == "hello"
     assert scorer.texts == ["hello"]
-    assert result.metadata["score"] == score
 
 
 def test_score_above_threshold_is_blocked():
     defense, _ = make_defense(score=10.01)
 
-    result = defense.apply("hello")
+    with pytest.raises(DefenseBlocked) as blocked:
+        defense.apply("hello")
 
-    assert result.text == defense.blocked_response
-    assert result.blocked is True
-    assert result.metadata["blocked"] is True
+    assert blocked.value.response == defense.blocked_response
+    assert blocked.value.defense_name == "perplexity"
+    assert blocked.value.metadata["blocked"] is True
+    assert blocked.value.metadata["score"] == 10.01
 
 
 def test_unscorable_input_is_neutral_even_with_block_failure_policy():
@@ -57,24 +58,25 @@ def test_unscorable_input_is_neutral_even_with_block_failure_policy():
 
     result = defense.apply("x")
 
-    assert result.blocked is False
-    assert result.metadata["status"] == "insufficient_tokens"
-    assert result.metadata["score"] is None
+    assert result == "x"
 
 
-@pytest.mark.parametrize(
-    "policy,blocked",
-    [("allow", False), ("block", True)],
-)
-def test_non_raising_failure_policies(policy, blocked):
+def test_allow_failure_policy_returns_original_text():
     scorer = FakeScorer(error=RuntimeError("scorer broke"))
-    defense, _ = make_defense(scorer=scorer, failure_policy=policy)
+    defense, _ = make_defense(scorer=scorer, failure_policy="allow")
 
-    result = defense.apply("hello")
+    assert defense.apply("hello") == "hello"
 
-    assert result.blocked is blocked
-    assert result.metadata["error"] == "RuntimeError: scorer broke"
-    assert result.metadata["failure_policy"] == policy
+
+def test_block_failure_policy_raises_block_signal_with_error_metadata():
+    scorer = FakeScorer(error=RuntimeError("scorer broke"))
+    defense, _ = make_defense(scorer=scorer, failure_policy="block")
+
+    with pytest.raises(DefenseBlocked) as blocked:
+        defense.apply("hello")
+
+    assert blocked.value.metadata["error"] == "RuntimeError: scorer broke"
+    assert blocked.value.metadata["failure_policy"] == "block"
 
 
 def test_raise_failure_policy_wraps_error():
@@ -85,13 +87,15 @@ def test_raise_failure_policy_wraps_error():
         defense.apply("hello")
 
 
-def test_metadata_preserves_configuration_and_measurement_details():
-    defense, _ = make_defense(score=7.5, threshold=11.0)
+def test_block_metadata_preserves_configuration_and_measurement_details():
+    defense, _ = make_defense(score=12.0, threshold=11.0)
 
-    metadata = defense.apply("hello").metadata
+    with pytest.raises(DefenseBlocked) as blocked:
+        defense.apply("hello")
+    metadata = blocked.value.metadata
 
     assert metadata["stage"] == "input"
-    assert metadata["score"] == 7.5
+    assert metadata["score"] == 12.0
     assert metadata["threshold"] == 11.0
     assert metadata["token_count"] == 5
     assert metadata["predicted_token_count"] == 4

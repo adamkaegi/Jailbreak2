@@ -2,6 +2,7 @@
 
 import pytest
 
+from defenses.block import DefenseBlocked
 from defenses.llama_guard import (
     GuardDecision,
     LlamaGuardInputDefense,
@@ -65,8 +66,7 @@ def test_conversation_builders_preserve_native_roles():
     assert build_input_guard_conversation("hello") == [
         {"role": "user", "content": "hello"}
     ]
-    assert build_output_guard_conversation("hello", "answer") == [
-        {"role": "user", "content": "hello"},
+    assert build_output_guard_conversation("answer") == [
         {"role": "assistant", "content": "answer"},
     ]
 
@@ -77,8 +77,7 @@ def test_safe_input_is_preserved():
 
     result = defense.apply("hello")
 
-    assert result.text == "hello"
-    assert result.blocked is False
+    assert result == "hello"
     assert classifier.conversations[0][-1]["content"] == "hello"
 
 
@@ -86,54 +85,49 @@ def test_unsafe_input_is_blocked_with_categories():
     classifier = FakeClassifier(decision("unsafe", ["S5"]))
     defense = LlamaGuardInputDefense(classifier=classifier)
 
-    result = defense.apply("bad prompt")
+    with pytest.raises(DefenseBlocked) as blocked:
+        defense.apply("bad prompt")
 
-    assert result.text == defense.blocked_response
-    assert result.blocked is True
-    assert result.metadata["decision"]["categories"] == ["S5"]
-    assert result.metadata["response_replaced"] is False
+    assert blocked.value.response == defense.blocked_response
+    assert blocked.value.defense_name == "llama_guard_input"
+    assert blocked.value.metadata["decision"]["categories"] == ["S5"]
+    assert blocked.value.metadata["response_replaced"] is False
 
 
-def test_safe_output_uses_model_facing_prompt_and_preserves_response():
+def test_safe_output_classifies_and_preserves_response():
     classifier = FakeClassifier(decision("safe"))
     defense = LlamaGuardOutputDefense(classifier=classifier)
 
-    result = defense.apply_with_context(
-        "target answer",
-        original_prompt="raw prompt",
-        model_prompt="attacked prompt",
-    )
+    result = defense.apply("target answer")
 
-    assert result.text == "target answer"
-    assert result.blocked is False
+    assert result == "target answer"
     assert classifier.conversations == [[
-        {"role": "user", "content": "attacked prompt"},
         {"role": "assistant", "content": "target answer"},
     ]]
 
 
-def test_unsafe_output_is_replaced_and_original_is_recorded():
+def test_unsafe_output_is_replaced():
     classifier = FakeClassifier(decision("unsafe", ["S2"]))
     defense = LlamaGuardOutputDefense(classifier=classifier)
 
-    result = defense.apply_with_context(
-        "unsafe target answer",
-        original_prompt="prompt",
-        model_prompt="prompt",
-    )
+    result = defense.apply("unsafe target answer")
 
-    assert result.text == defense.blocked_response
-    assert result.blocked is True
-    assert result.metadata["response_replaced"] is True
-    assert result.metadata["original_response"] == "unsafe target answer"
+    assert result == defense.blocked_response
 
 
-@pytest.mark.parametrize("policy,blocked", [("allow", False), ("block", True)])
-def test_unknown_decision_follows_failure_policy(policy, blocked):
+def test_unknown_input_decision_allows_with_allow_policy():
     classifier = FakeClassifier(decision("unknown", status="provider_error", error="down"))
-    defense = LlamaGuardInputDefense(classifier=classifier, failure_policy=policy)
+    defense = LlamaGuardInputDefense(classifier=classifier, failure_policy="allow")
 
-    assert defense.apply("hello").blocked is blocked
+    assert defense.apply("hello") == "hello"
+
+
+def test_unknown_input_decision_blocks_with_block_policy():
+    classifier = FakeClassifier(decision("unknown", status="provider_error", error="down"))
+    defense = LlamaGuardInputDefense(classifier=classifier, failure_policy="block")
+
+    with pytest.raises(DefenseBlocked):
+        defense.apply("hello")
 
 
 def test_unknown_decision_can_raise():

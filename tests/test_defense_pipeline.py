@@ -1,7 +1,11 @@
 """Integration tests for block-aware defense composition."""
 
+import pytest
+
 from attacks.base import Attack
-from defenses.base import Defense, DefenseResult
+from defenses.base import Defense
+from defenses.block import DefenseBlocked
+from main import _invoke_chain
 from pipeline import build_chain
 
 
@@ -24,19 +28,16 @@ class BlockingDefense(Defense):
     name = "blocker"
     stage = "input"
 
-    def apply(self, text: str) -> DefenseResult:
-        return DefenseResult("blocked response", blocked=True)
+    def apply(self, text: str) -> str:
+        raise DefenseBlocked("blocked response", defense_name=self.name)
 
 
-class ContextOutputDefense(Defense):
-    name = "context_output"
+class OutputDefense(Defense):
+    name = "output"
     stage = "output"
 
     def apply(self, text: str) -> str:
-        return text
-
-    def apply_with_context(self, text, *, original_prompt, model_prompt):
-        return f"{original_prompt}|{model_prompt}|{text}"
+        return text + " output-checked"
 
 
 def test_legacy_string_defense_remains_pluggable():
@@ -47,28 +48,39 @@ def test_legacy_string_defense_remains_pluggable():
     assert "hello transformed" in output
 
 
-def test_input_block_short_circuits_model_and_output_defenses():
+def test_input_block_signal_stops_the_pipeline():
     chain = build_chain(
         IdentityAttack(),
-        [BlockingDefense(), ContextOutputDefense()],
+        [BlockingDefense(), OutputDefense()],
+        "unused",
+        dry_run=True,
+    )
+
+    with pytest.raises(DefenseBlocked) as blocked:
+        chain.invoke("hello")
+
+    assert blocked.value.response == "blocked response"
+
+
+def test_main_adapter_returns_blocked_response():
+    chain = build_chain(
+        IdentityAttack(),
+        [BlockingDefense(), OutputDefense()],
+        "unused",
+        dry_run=True,
+    )
+
+    assert _invoke_chain(chain, "hello", {}) == "blocked response"
+
+
+def test_output_defense_remains_a_plain_text_transform():
+    chain = build_chain(
+        IdentityAttack(),
+        [OutputDefense()],
         "unused",
         dry_run=True,
     )
 
     output = chain.invoke("hello")
 
-    assert output == "blocked response"
-    assert "[dry-run model]" not in output
-
-
-def test_output_defense_receives_original_and_model_facing_prompts():
-    chain = build_chain(
-        IdentityAttack(),
-        [LegacyTextDefense(), ContextOutputDefense()],
-        "unused",
-        dry_run=True,
-    )
-
-    output = chain.invoke("hello")
-
-    assert output.startswith("hello|hello transformed|")
+    assert output.endswith(" output-checked")

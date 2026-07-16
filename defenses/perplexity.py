@@ -7,7 +7,8 @@ from time import perf_counter
 from typing import Any
 
 import config
-from .base import Defense, DefenseResult
+from .base import Defense
+from .block import DefenseBlocked
 
 
 @dataclass(frozen=True)
@@ -198,7 +199,7 @@ class PerplexityDefense(Defense):
             stride=config.PERPLEXITY_STRIDE,
         )
 
-    def apply(self, text: str) -> DefenseResult:
+    def apply(self, text: str) -> str:
         start = perf_counter()
         result = None
         error = ""
@@ -244,8 +245,10 @@ class PerplexityDefense(Defense):
             "failure_policy": self.failure_policy,
             "error": error,
         }
-        return DefenseResult(
-            self.blocked_response if blocked else text,
-            blocked=blocked,
-            metadata=metadata,
-        )
+        if blocked:
+            raise DefenseBlocked(
+                self.blocked_response,
+                defense_name=self.name,
+                metadata=metadata,
+            )
+        return text
