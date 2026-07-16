@@ -1,0 +1,4 @@
+Reply using exactly three words.
+Answer only with a number: what is 12 times 8?
+Respond in all capital letters: say hello.
+List three fruits, comma-separated, nothing else.
