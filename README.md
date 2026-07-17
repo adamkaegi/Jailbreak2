@@ -37,7 +37,9 @@ scripts/     shell scripts that run main.py multiple times consecutively
 
 ## Attacks
 
-- **Attack** `sample` — sample
+- **Attack** `gcg` — appends a precomputed, static GCG-style universal adversarial suffix to the prompt
+- **Attack** `pair` — iteratively refines the prompt in a black-box loop: sends the current prompt to the target model, judges the response with `sample_safe_unsafe`, and if still `Safe`, asks an attacker LLM (`qwen2.5:3b` by default) to mutate the prompt; repeats up to `max_rounds` times (default 3)
+
 
 ## Defences
 
@@ -125,8 +127,8 @@ Nothing in `pipeline.py` or `main.py` changes when you do.
 
 Add as needed for testing
 - `scripts/run_readme_examples.sh` — runs every example from the [Run](#run) section consecutively.
+- `scripts/script.sh` - runs all attacks/defenses as of Jul 16
 
 ## ToDo
 
-- Figure out the judge
-- Figure out the prompts to use
+- Run and see issues
