@@ -155,8 +155,6 @@ def main() -> None:
     run_rows: list[dict[str, str]] = []
     for i, prompt in enumerate(prompts, 1):
         print(f"--- [{i}] {prompt}")
-        start_time = time.perf_counter()
-        output_text = _invoke_chain(chain, prompt, invoke_kwargs)
         invoke_kwargs = (
             {
                 "config": {
@@ -167,7 +165,8 @@ def main() -> None:
             if langfuse_handler
             else {}
         )
-        output_text = chain.invoke(prompt, **invoke_kwargs)
+        start_time = time.perf_counter()
+        output_text = _invoke_chain(chain, prompt, invoke_kwargs)
         latency_seconds = time.perf_counter() - start_time
         judge_label = judge.apply(output_text)
         if langfuse_client is not None and langfuse_handler is not None:
