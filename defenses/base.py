@@ -3,8 +3,11 @@ from typing import Literal
 
 
 class Defense(ABC):
-    """A defense runs on the prompt ("input" stage) or the model's
-    response ("output" stage)."""
+    """Context-only interface template for concrete defense implementations.
+
+    ``Defense`` itself is never registered or run. A concrete defense declares
+    whether it operates on model input or model output and implements ``apply``.
+    """
 
     name: str
     stage: Literal["input", "output"]

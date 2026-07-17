@@ -28,6 +28,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable, RunnableLambda
 
+import config
 from attacks.base import Attack
 from defenses.base import Defense
 
@@ -45,7 +46,12 @@ def _make_model(model_name: str, dry_run: bool) -> Runnable:
 
     from langchain_ollama import ChatOllama  # imported lazily: not needed for --dry-run
 
-    return ChatOllama(model=model_name)
+    return ChatOllama(
+        model=model_name,
+        temperature=config.MODEL_TEMPERATURE,
+        seed=config.MODEL_SEED,
+        num_predict=config.MODEL_MAX_TOKENS,
+    )
 
 
 def _defense_step(defense: Defense) -> Runnable:
@@ -58,15 +64,16 @@ def _defense_step(defense: Defense) -> Runnable:
     return RunnableLambda(lambda text, defense=defense: defense.apply(text))
 
 
-def build_chain(
-    attack: Attack,
+def build_response_chain(
     defenses: Sequence[Defense],
     model_name: str,
     dry_run: bool = False,
 ) -> Runnable:
-    """Wire one attack, any number of defenses, and a model into one Runnable.
+    """Wire defenses and a model after an attack has already been applied.
 
-    Call `.invoke(prompt_text)` on the result to run a prompt end to end.
+    Call ``.invoke(attacked_prompt)`` on the result. This lets callers cache
+    the exact attack output without applying stateful or stochastic attacks
+    twice.
     """
     input_defenses = [d for d in defenses if d.stage == "input"]
     output_defenses = [d for d in defenses if d.stage == "output"]
@@ -74,7 +81,7 @@ def build_chain(
     prompt_template = ChatPromptTemplate.from_messages([("user", "{text}")])
     model = _make_model(model_name, dry_run)
 
-    chain = RunnableLambda(attack.apply)
+    chain = RunnableLambda(lambda text: text)
     for defense in input_defenses:
         chain = chain | _defense_step(defense)
 
@@ -86,3 +93,17 @@ def build_chain(
         chain = chain | _defense_step(defense)
 
     return chain
+
+
+def build_chain(
+    attack: Attack,
+    defenses: Sequence[Defense],
+    model_name: str,
+    dry_run: bool = False,
+) -> Runnable:
+    """Wire attack, defenses, and a model into the original public Runnable."""
+    return RunnableLambda(attack.apply) | build_response_chain(
+        defenses,
+        model_name,
+        dry_run=dry_run,
+    )

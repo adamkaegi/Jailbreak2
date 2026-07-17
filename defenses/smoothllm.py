@@ -21,7 +21,8 @@ class SmoothLLMDefense(Defense):
         model_name: str = config.MODEL,
         num_samples: int = 5,
         perturbation_rate: float = 0.15,
-        seed: int | None = None,
+        seed: int | None = config.MODEL_SEED,
+        dry_run: bool = False,
     ) -> None:
         if num_samples < 1:
             raise ValueError("num_samples must be at least 1")
@@ -32,6 +33,7 @@ class SmoothLLMDefense(Defense):
         self.num_samples = num_samples
         self.perturbation_rate = perturbation_rate
         self.seed = seed
+        self.dry_run = dry_run
 
     def apply(self, text: str) -> str:
         candidates = [self._perturb(text, index) for index in range(self.num_samples)]
@@ -45,6 +47,24 @@ class SmoothLLMDefense(Defense):
             majority_candidates = candidates
 
         return self._choice(majority_candidates, text)
+
+    def for_model(self, model_name: str) -> "SmoothLLMDefense":
+        return type(self)(
+            model_name=model_name,
+            num_samples=self.num_samples,
+            perturbation_rate=self.perturbation_rate,
+            seed=self.seed,
+            dry_run=self.dry_run,
+        )
+
+    def for_run(self, model_name: str, dry_run: bool = False) -> "SmoothLLMDefense":
+        return type(self)(
+            model_name=model_name,
+            num_samples=self.num_samples,
+            perturbation_rate=self.perturbation_rate,
+            seed=self.seed,
+            dry_run=dry_run,
+        )
 
     def _choice(self, candidates: list[str], fallback: str) -> str:
         if not candidates:
@@ -80,11 +100,16 @@ class SmoothLLMDefense(Defense):
         return "".join(perturbation_chars)
 
     def _verdict(self, candidate: str) -> str:
-        if ChatOllama is None:
+        if self.dry_run or ChatOllama is None:
             return self._heuristic_verdict(candidate)
 
         try:
-            model = ChatOllama(model=self.model_name, temperature=0)
+            model = ChatOllama(
+                model=self.model_name,
+                temperature=config.MODEL_TEMPERATURE,
+                seed=config.MODEL_SEED,
+                num_predict=config.MODEL_MAX_TOKENS,
+            )
             response = model.invoke(candidate)
             response_text = self._content(response)
             judge_prompt = (
@@ -92,7 +117,13 @@ class SmoothLLMDefense(Defense):
                 'Reply with only "ok" or "not ok".\n\n'
                 f"Assistant response:\n{response_text}"
             )
-            verdict_response = model.invoke(judge_prompt)
+            verdict_model = ChatOllama(
+                model=self.model_name,
+                temperature=config.MODEL_TEMPERATURE,
+                seed=config.MODEL_SEED,
+                num_predict=config.CLASSIFIER_MAX_TOKENS,
+            )
+            verdict_response = verdict_model.invoke(judge_prompt)
             verdict_text = self._content(verdict_response).strip().lower()
             if "ok" in verdict_text and "not ok" not in verdict_text:
                 return "ok"
