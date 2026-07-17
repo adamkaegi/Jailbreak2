@@ -63,11 +63,8 @@ python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ollama serve # separate terminal
 ollama pull llama3.2:3b # whatever model configured
-ollama pull llama-guard3:1b
+ollama pull llama-guard3:1b # if running defense and need
 ```
-
-The perplexity filter downloads the configured Hugging Face model (`gpt2` by
-default) on first use and then reuses the local cache.
 
 ## Local Langfuse
 
@@ -97,8 +94,7 @@ The CLI accepts these flags:
 - `--defense` selects one or more defenses from `defenses/__init__.py` as a comma-separated list. Default: `sample_bye_adam_input,sample_bye_adam_output`.
 - `--judge` selects the judge implementation from `judges/__init__.py`. Default: `sample_safe_unsafe`.
 - `--batch` chooses the prompt batch file stem from `prompts/`. Default: `general`.
-- `--dry-run` replaces the target model with an echo stub. Selected defenses
-  still run, so Llama Guard continues to require Ollama.
+- `--dry-run` skips Ollama and echoes the prompt flow for wiring checks.
 
 A `prompt` is optional. If you omit it, the selected batch runs instead.
 
@@ -112,25 +108,7 @@ python main.py                                        # batch from config.py
 python main.py --batch instructions --defense sample_bye_adam_input,sample_bye_adam_output
 python main.py --judge sample_safe_unsafe              # judge final model output
 python main.py --dry-run                              # stub target, test wiring
-
-# Perplexity input filtering
-python main.py "Your prompt" --attack none --defense perplexity
-
-# Llama Guard input or output filtering
-python main.py "Your prompt" --attack none --defense llama_guard_input
-python main.py "Your prompt" --attack none --defense llama_guard_output
-
-# Compose both Guard stages, optionally after perplexity
-python main.py "Your prompt" --attack none --defense llama_guard_input,llama_guard_output
-python main.py "Your prompt" --attack none --defense perplexity,llama_guard_input,llama_guard_output
 ```
-
-Input filters raise an internal block signal that `main.py` converts to a safe
-response, preventing the target model call without changing the shared defense
-base class or pipeline.
-Output filters run only after target generation and can replace the response.
-Thresholds, model names, blocked responses, and failure policies live in
-`config.py`.
 
 ## Adding real components later
 
