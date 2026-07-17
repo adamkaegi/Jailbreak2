@@ -16,6 +16,7 @@ from pathlib import Path
 import config
 from attacks import ATTACKS
 from defenses import DEFENSES
+from defenses.block import DefenseBlocked
 from judges import JUDGES
 from pipeline import build_chain
 from prompts import available_batches, load_batch
@@ -50,7 +51,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--judge", default=config.JUDGE, choices=JUDGES.keys())
     parser.add_argument("--batch", default=config.BATCH, choices=available_batches())
     parser.add_argument(
-        "--dry-run", action="store_true", help="Echo the prompt instead of calling Ollama."
+        "--dry-run",
+        action="store_true",
+        help="Echo the target prompt; selected defenses still run.",
     )
     return parser.parse_args()
 
@@ -122,6 +125,14 @@ def _write_run_csv(
     return csv_path
 
 
+def _invoke_chain(chain, prompt: str, invoke_kwargs: dict) -> str:
+    """Invoke the chain, returning a defense's response after an input block."""
+    try:
+        return chain.invoke(prompt, **invoke_kwargs)
+    except DefenseBlocked as blocked:
+        return blocked.response
+
+
 def main() -> None:
     args = parse_args()
 
@@ -145,6 +156,7 @@ def main() -> None:
     for i, prompt in enumerate(prompts, 1):
         print(f"--- [{i}] {prompt}")
         start_time = time.perf_counter()
+        output_text = _invoke_chain(chain, prompt, invoke_kwargs)
         invoke_kwargs = (
             {
                 "config": {

@@ -43,6 +43,9 @@ scripts/     shell scripts that run main.py multiple times consecutively
 
 - **Defense** `smoothllm` (input) — generates multiple perturbed prompt variants, scores them, and selects one from the majority class
 - **Defense** `self_reminder` (input) — wraps the prompt with a responsible-assistant prefix and a safety-review suffix; both are overridable on the defense constructor
+- **Defense** `perplexity` (input) — scores the attacked prompt with local GPT-2 and blocks scores above the configured threshold
+- **Defense** `llama_guard_input` (input) — classifies the model-facing prompt with Llama Guard and skips target inference when unsafe
+- **Defense** `llama_guard_output` (output) — classifies and replaces unsafe model output
 
 ## Judges
 
@@ -59,6 +62,9 @@ scripts/     shell scripts that run main.py multiple times consecutively
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ollama serve # separate terminal
+# pull models as needed
+ollama pull llama3.2:3b # whatever model configured
+ollama pull llama-guard3:1b # if running defense and need
 ollama pull llama3.2:3b # whatever model configured (prompt response and judge)
 ```
 
@@ -103,7 +109,7 @@ python main.py "What is the capital of France?"       # single prompt
 python main.py                                        # batch from config.py
 python main.py --batch instructions --defense sample_bye_adam_input,sample_bye_adam_output
 python main.py --judge sample_safe_unsafe              # judge final model output
-python main.py --dry-run                              # no Ollama, tests wiring
+python main.py --dry-run                              # stub target, test wiring
 ```
 
 ## Adding real components later
