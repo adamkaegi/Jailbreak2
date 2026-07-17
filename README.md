@@ -62,8 +62,10 @@ scripts/     shell scripts that run main.py multiple times consecutively
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ollama serve # separate terminal
+# pull models as needed
 ollama pull llama3.2:3b # whatever model configured
 ollama pull llama-guard3:1b # if running defense and need
+ollama pull llama3.2:3b # whatever model configured (prompt response and judge)
 ```
 
 ## Local Langfuse

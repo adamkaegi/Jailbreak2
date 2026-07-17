@@ -144,7 +144,6 @@ def main() -> None:
     # into a single LangChain Runnable; see pipeline.py for how that works.
     chain = build_chain(attack, defenses, args.model, dry_run=args.dry_run)
     langfuse_client, langfuse_handler = _load_langfuse_handler()
-    invoke_kwargs = {"config": {"callbacks": [langfuse_handler]}} if langfuse_handler else {}
 
     prompts = [args.prompt] if args.prompt else load_batch(args.batch)
     source = "single prompt" if args.prompt else f"batch '{args.batch}' ({len(prompts)} prompts)"
@@ -158,8 +157,26 @@ def main() -> None:
         print(f"--- [{i}] {prompt}")
         start_time = time.perf_counter()
         output_text = _invoke_chain(chain, prompt, invoke_kwargs)
+        invoke_kwargs = (
+            {
+                "config": {
+                    "callbacks": [langfuse_handler],
+                    "run_name": f"[{i}] {prompt[:80]}",
+                }
+            }
+            if langfuse_handler
+            else {}
+        )
+        output_text = chain.invoke(prompt, **invoke_kwargs)
         latency_seconds = time.perf_counter() - start_time
         judge_label = judge.apply(output_text)
+        if langfuse_client is not None and langfuse_handler is not None:
+            langfuse_client.create_score(
+                trace_id=langfuse_handler.last_trace_id,
+                name="judge_label",
+                value=judge_label,
+                data_type="CATEGORICAL",
+            )
         run_rows.append(
             {
                 "input": prompt,
