@@ -18,6 +18,7 @@ from uuid import uuid4
 import config
 from attacks import ATTACKS
 from defenses import DEFENSES
+from defenses.block import DefenseBlocked
 from judges import JUDGES
 from judges.runtime import (
     JudgeResult,
@@ -61,7 +62,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--judge", default=config.JUDGE, choices=JUDGES.keys())
     parser.add_argument("--batch", default=config.BATCH, choices=available_batches())
     parser.add_argument(
-        "--dry-run", action="store_true", help="Echo the prompt instead of calling Ollama."
+        "--dry-run",
+        action="store_true",
+        help="Echo the target prompt; selected defenses still run.",
     )
     return parser.parse_args()
 
@@ -208,6 +211,14 @@ def _configure_defense_for_run(defense: object, model_name: str, dry_run: bool) 
     return defense
 
 
+def _invoke_chain(chain, prompt: str, invoke_kwargs: dict) -> str:
+    """Invoke the chain, returning a defense's response after an input block."""
+    try:
+        return chain.invoke(prompt, **invoke_kwargs)
+    except DefenseBlocked as blocked:
+        return blocked.response
+
+
 def main() -> None:
     args = parse_args()
 
@@ -222,7 +233,6 @@ def main() -> None:
     # This chain handles the remaining defenses -> model -> defenses stages.
     response_chain = build_response_chain(defenses, args.model, dry_run=args.dry_run)
     langfuse_client, langfuse_handler = _load_langfuse_handler()
-    invoke_kwargs = {"config": {"callbacks": [langfuse_handler]}} if langfuse_handler else {}
 
     single_prompt = args.prompt is not None
     prompts = [args.prompt] if single_prompt else load_batch(args.batch)
@@ -243,12 +253,22 @@ def main() -> None:
     )
     for i, prompt in enumerate(prompts, 1):
         print(f"--- [{i}] {prompt}")
+        invoke_kwargs = (
+            {
+                "config": {
+                    "callbacks": [langfuse_handler],
+                    "run_name": f"[{i}] {prompt[:80]}",
+                }
+            }
+            if langfuse_handler
+            else {}
+        )
         attack_start_time = time.perf_counter()
         attacked_prompt = attack.apply(prompt)
         attack_latency_seconds = time.perf_counter() - attack_start_time
 
         response_start_time = time.perf_counter()
-        output_text = response_chain.invoke(attacked_prompt, **invoke_kwargs)
+        output_text = _invoke_chain(response_chain, attacked_prompt, invoke_kwargs)
         response_latency_seconds = time.perf_counter() - response_start_time
         latency_seconds = attack_latency_seconds + response_latency_seconds
         row = {

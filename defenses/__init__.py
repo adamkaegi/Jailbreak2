@@ -4,6 +4,8 @@ from .sample_bye_adam_output import SampleByeAdamOutputDefense
 from .smoothllm import SmoothLLMDefense
 from .self_reminder import SelfReminderDefense
 from .none import NoOpDefense
+from .perplexity import PerplexityDefense
+from .llama_guard import LlamaGuardInputDefense, LlamaGuardOutputDefense
 
 # Available defenses (comma-separate multiple choices on the CLI):
 # - smoothllm: perturbs and screens input prompts with the selected target model.
@@ -19,5 +21,8 @@ DEFENSES: dict[str, Defense] = {
         SmoothLLMDefense(),
         SelfReminderDefense(),
         NoOpDefense(),
+        PerplexityDefense(),
+        LlamaGuardInputDefense(),
+        LlamaGuardOutputDefense(),
     )
 }

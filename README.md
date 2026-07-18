@@ -43,6 +43,8 @@ scripts/     shell scripts that run main.py multiple times consecutively
 
 - **Attack** `deepinception` — Ryan's five-layer nested-scene template attack
 - **Attack** `template` — compatibility alias for `deepinception`
+- **Attack** `gcg` — appends a precomputed, static GCG-style universal adversarial suffix to the prompt
+- **Attack** `pair` — iteratively refines the prompt in a black-box loop using an attacker LLM, target model, and lightweight judge (up to 3 rounds by default)
 - **Attack** `none` — raw-prompt baseline
 - **Attack** `sample_hi_adam` — original wiring example
 
@@ -50,6 +52,9 @@ scripts/     shell scripts that run main.py multiple times consecutively
 
 - **Defense** `smoothllm` (input) — generates multiple perturbed prompt variants, scores them, and selects one from the majority class
 - **Defense** `self_reminder` (input) — wraps the prompt with a responsible-assistant prefix and a safety-review suffix; both are overridable on the defense constructor
+- **Defense** `perplexity` (input) — scores the attacked prompt with local GPT-2 and blocks scores above the configured threshold
+- **Defense** `llama_guard_input` (input) — classifies the model-facing prompt with Llama Guard and skips target inference when unsafe
+- **Defense** `llama_guard_output` (output) — classifies and replaces unsafe model output
 
 ## Judges
 
@@ -79,6 +84,7 @@ ollama serve # separate terminal
 python scripts\pull_models.py
 python scripts\prefetch_strongreject.py
 python scripts\prefetch_harmbench.py
+ollama pull llama3:8b # if using the JailbreakBench judge
 ```
 
 The two evaluator prefetch commands download large Hugging Face checkpoints;
@@ -129,6 +135,7 @@ python main.py --batch instructions --defense sample_bye_adam_input,sample_bye_a
 python main.py --judge sample_safe_unsafe             # lightweight debug judge
 python main.py --judge strongreject                   # continuous harmful score
 python main.py --judge harmbench_mistral_7b_val_cls   # binary validation classifier
+python main.py --judge jailbreak_bench_llama8b        # local Llama 3 8B classifier
 python main.py --dry-run                              # no Ollama, tests wiring
 ```
 
@@ -151,6 +158,7 @@ Nothing in `pipeline.py` or `main.py` changes when you do.
 - `scripts/judge_csv.py` — applies a judge to cached responses without
   regenerating target-model output; it always writes a new CSV.
 - `scripts/run_readme_examples.sh` — runs the lightweight README examples.
+- `scripts/script.sh` — runs the attack/defense combinations.
 
 ## Tests
 
