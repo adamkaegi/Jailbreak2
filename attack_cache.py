@@ -7,14 +7,26 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from typing import Any, Mapping
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _prompt_hash(prompt: str) -> str:
     return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+
+
+def settings_fingerprint(settings: Mapping[str, Any]) -> str:
+    """Return a stable identity for every setting that can change an attack."""
+    encoded = json.dumps(
+        settings,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -33,11 +45,18 @@ class AttackOutputCache:
         attack: str,
         model: str,
         batch: str,
+        settings: Mapping[str, Any],
     ) -> None:
         self.path = path.resolve()
         self.attack = attack
         self.model = model
         self.batch = batch
+        # Round-trip through JSON so the value written and the value validated
+        # have exactly the same representation.
+        self.settings = json.loads(
+            json.dumps(settings, ensure_ascii=False, sort_keys=True)
+        )
+        self.settings_sha256 = settings_fingerprint(self.settings)
         self._entries: dict[str, dict[str, object]] = {}
         if self.path.exists():
             self._load()
@@ -49,6 +68,7 @@ class AttackOutputCache:
             "attack": self.attack,
             "model": self.model,
             "batch": self.batch,
+            "settings_sha256": self.settings_sha256,
         }
         for field, value in expected.items():
             if payload.get(field) != value:
@@ -56,6 +76,8 @@ class AttackOutputCache:
                     f"Attack cache {self.path} has {field}={payload.get(field)!r}; "
                     f"expected {value!r}"
                 )
+        if payload.get("settings") != self.settings:
+            raise ValueError(f"Attack cache {self.path} has different attack settings")
         entries = payload.get("entries")
         if not isinstance(entries, list):
             raise ValueError(f"Attack cache {self.path} has invalid entries")
@@ -115,6 +137,8 @@ class AttackOutputCache:
             "attack": self.attack,
             "model": self.model,
             "batch": self.batch,
+            "settings": self.settings,
+            "settings_sha256": self.settings_sha256,
             "entries": list(self._entries.values()),
         }
         temporary_path = self.path.with_name(

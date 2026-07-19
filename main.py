@@ -9,7 +9,9 @@ Examples:
 
 import argparse
 import csv
+import hashlib
 import os
+import re
 import subprocess
 import time
 from datetime import datetime
@@ -17,6 +19,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import config
+from attack_cache import AttackOutputCache, settings_fingerprint
 from attacks import ATTACKS
 from console_io import configure_utf8_stdio
 from defenses import DEFENSES
@@ -94,6 +97,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--output-csv",
         type=Path,
         help="Write checkpoints and the completed run to this exact CSV path.",
+    )
+    cache_options = parser.add_mutually_exclusive_group()
+    cache_options.add_argument(
+        "--attack-cache",
+        type=Path,
+        help=(
+            "PAIR attack-output cache path. Matrix runs choose a shared path "
+            "automatically."
+        ),
+    )
+    cache_options.add_argument(
+        "--no-attack-cache",
+        action="store_true",
+        help="Disable the automatic persistent PAIR cache.",
     )
     parser.add_argument(
         "--resume",
@@ -286,6 +303,85 @@ def _prompt_set_name(batch_name: str | None) -> str:
     return "unknown"
 
 
+def _safe_path_component(value: str) -> str:
+    """Make model and batch names safe inside a cross-platform cache filename."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._-") or "value"
+
+
+def _resolve_attack_cache(
+    args: argparse.Namespace,
+    attack: object,
+    prompts: list[str],
+    batch_name: str,
+    csv_path: Path,
+) -> AttackOutputCache | None:
+    """Return the persistent PAIR cache shared by all matrix defense cells."""
+    explicit_path = getattr(args, "attack_cache", None)
+    disabled = bool(getattr(args, "no_attack_cache", False))
+    attack_name = str(getattr(attack, "name", ""))
+    if disabled or bool(getattr(args, "dry_run", False)):
+        return None
+    if attack_name != "pair":
+        if explicit_path is not None:
+            raise ValueError("--attack-cache is currently supported only for PAIR")
+        return None
+
+    identity_builder = getattr(attack, "cache_identity", None)
+    if not callable(identity_builder):
+        raise TypeError("PAIR must provide cache_identity() before caching its output")
+    settings = dict(identity_builder())
+    settings["prompt_batch_sha256"] = hashlib.sha256(
+        "\n".join(prompts).encode("utf-8")
+    ).hexdigest()
+    fingerprint = settings_fingerprint(settings)[:12]
+
+    if explicit_path is not None:
+        cache_path = explicit_path.resolve()
+    else:
+        # Matrix checkpoints live under <output>/runs. Direct main.py runs use
+        # an attack-cache directory beside their requested CSV.
+        output_root = (
+            csv_path.parent.parent
+            if csv_path.parent.name.lower() == "runs"
+            else csv_path.parent
+        )
+        cache_path = output_root / "attack-cache" / (
+            f"pair-{_safe_path_component(str(getattr(args, 'model', 'model')))}-"
+            f"{_safe_path_component(batch_name)}-{fingerprint}.json"
+        )
+
+    return AttackOutputCache(
+        cache_path,
+        attack=attack_name,
+        model=str(getattr(args, "model", "")),
+        batch=batch_name,
+        settings=settings,
+    )
+
+
+def _apply_attack(
+    attack: object,
+    prompt: str,
+    cache: AttackOutputCache | None,
+) -> tuple[str, float, bool, float]:
+    """Apply an attack or reuse it, returning wall time and cache provenance."""
+    start_time = time.perf_counter()
+    cached = cache.get(prompt) if cache is not None else None
+    if cached is not None:
+        return (
+            cached.attacked_prompt,
+            time.perf_counter() - start_time,
+            True,
+            cached.generation_latency_seconds,
+        )
+
+    attacked_prompt = attack.apply(prompt)
+    generation_latency = time.perf_counter() - start_time
+    if cache is not None:
+        cache.put(prompt, attacked_prompt, generation_latency)
+    return attacked_prompt, generation_latency, False, generation_latency
+
+
 def _invoke_chain(chain, prompt: str, invoke_kwargs: dict) -> str:
     """Invoke the chain, returning a defense's response after an input block."""
     try:
@@ -368,6 +464,24 @@ def main() -> None:
         )
     print(f"checkpoint csv: {csv_path}")
 
+    attack_cache = _resolve_attack_cache(
+        args,
+        attack,
+        prompts,
+        batch_name,
+        csv_path,
+    )
+    if attack_cache is not None:
+        # Backfill a cache when resuming a PAIR checkpoint created before the
+        # cache integration. A conflicting value fails closed.
+        for cached_row in run_rows:
+            attack_cache.put(
+                cached_row["input"],
+                cached_row["attacked_input"],
+                float(cached_row.get("attack_latency_seconds", 0.0) or 0.0),
+            )
+        print(f"PAIR attack cache: {attack_cache.path}")
+
     for i in range(len(run_rows) + 1, len(prompts) + 1):
         prompt = prompts[i - 1]
         print(f"--- [{i}] {prompt}")
@@ -381,9 +495,17 @@ def main() -> None:
             if langfuse_handler
             else {}
         )
-        attack_start_time = time.perf_counter()
-        attacked_prompt = attack.apply(prompt)
-        attack_latency_seconds = time.perf_counter() - attack_start_time
+        (
+            attacked_prompt,
+            attack_latency_seconds,
+            attack_cache_hit,
+            original_attack_latency_seconds,
+        ) = _apply_attack(attack, prompt, attack_cache)
+        if attack_cache_hit:
+            print(
+                "PAIR attack cache hit "
+                f"(original generation {original_attack_latency_seconds:.3f}s)"
+            )
 
         response_start_time = time.perf_counter()
         output_text = _invoke_chain(response_chain, attacked_prompt, invoke_kwargs)

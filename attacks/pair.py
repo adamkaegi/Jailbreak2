@@ -1,5 +1,6 @@
 """PAIR-style iterative black-box prompt refinement attack using LangChain's ChatOllama."""
 
+import hashlib
 import config
 import re
 
@@ -68,6 +69,25 @@ class PAIRAttack(Attack):
             seed=self.seed,
             dry_run=dry_run,
         )
+
+    def cache_identity(self) -> dict[str, object]:
+        """Describe every active input that can change the selected prompt."""
+        judge_type = type(self.judge)
+        return {
+            "implementation": "pair_refusal_first_v1",
+            "attacker_system_prompt_sha256": hashlib.sha256(
+                _ATTACKER_SYSTEM_PROMPT.encode("utf-8")
+            ).hexdigest(),
+            "max_rounds": self.max_rounds,
+            "attacker_model": self.attacker_model,
+            "attacker_temperature": self.attacker_temperature,
+            "attacker_max_tokens": self.attacker_max_tokens,
+            "target_model": self.target_model,
+            "target_temperature": config.MODEL_TEMPERATURE,
+            "target_max_tokens": config.MODEL_MAX_TOKENS,
+            "seed": self.seed,
+            "stopping_judge": f"{judge_type.__module__}.{judge_type.__qualname__}",
+        }
 
     def _extract_prompt(self, attacker_raw: str, default: str) -> str:
         """Helper to extract prompt text between xml tags."""

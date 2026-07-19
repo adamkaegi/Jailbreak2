@@ -15,14 +15,13 @@
   - DeepInception is the strongest implemented semantic attack, but its long nested responses substantially increase generation time.
   - A concise DeepInception variant could be explored while keeping the published five-layer version as the primary reproducible baseline.
 
-- Attack consistency and caching gaps
-  - Adaptive attack prompts are regenerated separately for each defense cell.
-  - PAIR can therefore produce different attacked prompts for different defenses, which weakens direct defense-to-defense comparisons.
-  - The intended primary matrix should use an oblivious threat model where each defense receives the exact same cached attacked prompt.
+- Attack consistency and caching status
+  - PAIR attack prompts are now generated once per target model, attack configuration, prompt batch, and original prompt.
+  - Each defense cell receives the exact same cached PAIR prompt, supporting a controlled oblivious-threat-model comparison.
   - Adaptive attacks against a defended pipeline should be reported separately as stress tests.
-  - `attack_cache.py` exists but is not integrated into `main.py` or the matrix runner.
-  - Attack generation should happen once per model, attack, prompt batch, and prompt before evaluating all defenses.
-  - Reusing cached PAIR prompts would reduce runtime and improve experimental validity.
+  - `attack_cache.py` is integrated into `main.py`; matrix runs automatically share a validated persistent PAIR cache across defense-cell subprocesses.
+  - The cache identity covers the active PAIR settings, target model, attacker system prompt, stopping judge, seed, and prompt-batch hash.
+  - Cache-hit status and PAIR query counts are not yet stored as dedicated final-result columns.
 
 - Defense scope gaps
   - `llama_guard_input` remains available for ad-hoc experiments but has been removed from the default matrix.
@@ -59,7 +58,7 @@
 - Runtime and efficiency limitations
   - SmoothLLM is the largest response-generation cost because it invokes the target model multiple times per prompt.
   - PAIR search is expensive because it alternates between attacker and target model calls over several rounds.
-  - Repeating PAIR search for every defense adds hours to a full run.
+  - PAIR search is now paid once per prompt and reused across defenses instead of being repeated for every cell.
   - Ordinary generations are capped at 512 tokens to reduce runtime.
   - DeepInception generations are capped at 2048 tokens so the model has enough room to reach the final nested layer.
   - The same per-attack token limits are passed into SmoothLLM's internal generations.
@@ -87,15 +86,13 @@
   - Clearly distinguish harmful-behavior ASR from no-refusal rate.
   - Label local JBB refusal results as exploratory.
   - Label 10-prompt results as preliminary and avoid strong comparative claims from them.
-  - State whether each defense comparison used fixed attacked prompts or independently regenerated prompts.
-  - Avoid claiming that the current PAIR defense cells form a controlled paired comparison.
+  - State that PAIR defense comparisons use the same validated cached attacked prompt.
   - Emphasize that checkpointing, pinned datasets, pinned HarmBench weights, deterministic target decoding, benign usability testing, and separate attack/defense latency are already implemented.
-  - Identify goal-aware PAIR, prompt-specific or target-optimized GCG, shared attack caching, judge validation, and full statistical evaluation as the main next steps.
+  - Identify goal-aware PAIR, prompt-specific or target-optimized GCG, judge validation, and full statistical evaluation as the main next steps.
 
 - Recommended midterm execution scope
   - Run the complete 100-prompt matrix for `none`, `deepinception`, and the static GCG-style baseline.
-  - Run the simplified PAIR prototype against the undefended target as a separate preliminary experiment.
-  - Do not spend the midterm runtime budget repeatedly regenerating PAIR prompts across every defense unless the resulting limitation is explicitly documented.
+  - The simplified PAIR prototype can be compared across defenses without regenerating its selected prompt, but its results must still be labeled preliminary.
   - Keep both HarmBench and JBB enabled when benign usability cells are included.
   - If HarmBench is used as the only judge, skip benign cells because they will not receive a false-refusal label.
   - Use a new output directory for the current configuration rather than resuming the earlier quick run.

@@ -46,7 +46,9 @@ scripts/     shell scripts that run main.py multiple times consecutively
 - **Attack** `gcg` — appends a precomputed, static GCG-style universal adversarial suffix to the prompt
 - **Attack** `pair` — deterministically refines the prompt in a black-box loop
   using seeded attacker/target decoding and a refusal-first lightweight stopping
-  oracle (up to five rounds by default)
+  oracle (up to five rounds by default). Matrix runs persist each selected PAIR
+  prompt once and reuse that exact prompt across every defense cell; the cache
+  identity includes the PAIR settings, target model, and prompt-batch hash
 - **Attack** `none` — raw-prompt baseline
 - **Attack** `sample_hi_adam` — original wiring example
 
