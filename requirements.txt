@@ -9,3 +9,4 @@ sentencepiece>=0.2,<1
 torch>=2.5
 transformers>=4.45,<5
 pytest>=7.0.0
+requests>=2.31,<3

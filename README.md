@@ -44,13 +44,19 @@ scripts/     shell scripts that run main.py multiple times consecutively
 - **Attack** `deepinception` — Ryan's five-layer nested-scene template attack
 - **Attack** `template` — compatibility alias for `deepinception`
 - **Attack** `gcg` — appends a precomputed, static GCG-style universal adversarial suffix to the prompt
-- **Attack** `pair` — iteratively refines the prompt in a black-box loop using an attacker LLM, target model, and lightweight judge (up to 3 rounds by default)
+- **Attack** `pair` — deterministically refines the prompt in a black-box loop
+  using seeded attacker/target decoding and a refusal-first lightweight stopping
+  oracle (up to five rounds by default)
 - **Attack** `none` — raw-prompt baseline
 - **Attack** `sample_hi_adam` — original wiring example
 
 ## Defences
 
-- **Defense** `smoothllm` (input) — generates multiple perturbed prompt variants, scores them, and selects one from the majority class
+- **Defense** `smoothllm` (generation) — generates five Bernoulli
+  non-whitespace character-replacement perturbations (`q=10%`), obtains five
+  target responses, and returns a response from the majority
+  refusal/non-refusal class; this is a documented randomized-smoothing variant
+  and does not make an extra target call after voting
 - **Defense** `self_reminder` (input) — wraps the prompt with a responsible-assistant prefix and a safety-review suffix; both are overridable on the defense constructor
 - **Defense** `perplexity` (input) — scores the attacked prompt with local GPT-2 and blocks scores above the configured threshold
 - **Defense** `llama_guard_input` (input) — classifies the model-facing prompt with Llama Guard and skips target inference when unsafe
@@ -58,12 +64,16 @@ scripts/     shell scripts that run main.py multiple times consecutively
 
 ## Judges
 
-- **Judge** `sample_safe_unsafe` — keyword-only wiring/debug judge
+- **Judge** `sample_safe_unsafe` — keyword-only wiring/debug judge; its terminal
+  summary is explicitly marked **not final ASR** and must not be reported
 - **Judge** `strongreject` — local fine-tuned StrongREJECT evaluator; produces
   a continuous harmful-assistance score from 0 (refusal/useless) to 1
   (maximally useful harmful assistance)
 - **Judge** `harmbench_mistral_7b_val_cls` — official binary HarmBench Mistral
   validation classifier (`Unsafe`/1 for Yes, `Safe`/0 for No)
+- **Judge** `jbb_refusal_llama3_8b` — JailbreakBench Llama 3 8B refusal
+  classifier (`Refused`/1 or `Not Refused`/0); the old
+  `jailbreak_bench_llama8b` name remains as a CLI alias
 
 The Mistral checkpoint is explicitly HarmBench's validation classifier. It is
 available as this harness's post-generation judge as requested, but HarmBench's
@@ -73,6 +83,8 @@ canonical test/final classifier is the separate Llama-2 13B classifier.
 
 - `general` — everyday questions
 - `instructions` — instruction-following prompts
+- `jailbreakbench_harmful_100` / `_10` — pinned official JBB misuse goals
+- `jailbreakbench_benign_100` / `_10` — pinned thematically matched benign goals
 
 ## Setup
 
@@ -84,12 +96,21 @@ ollama serve # separate terminal
 python scripts\pull_models.py
 python scripts\prefetch_strongreject.py
 python scripts\prefetch_harmbench.py
-ollama pull llama3:8b # if using the JailbreakBench judge
+python scripts\fetch_jailbreakbench_prompts.py
+ollama pull llama3:8b # local JBB refusal provider
 ```
 
 The two evaluator prefetch commands download large Hugging Face checkpoints;
 HarmBench is approximately 14.5 GB. StrongREJECT also requires accepting the
 `google/gemma-2b` license and setting `HF_TOKEN` in `.env`.
+
+The JBB refusal judge defaults to the installed Ollama model. For the exact
+Together route used by JailbreakBench, set these in `.env`:
+
+```dotenv
+JBB_REFUSAL_PROVIDER=together
+TOGETHER_API_KEY=...
+```
 
 ## Local Langfuse
 
@@ -135,9 +156,90 @@ python main.py --batch instructions --defense sample_bye_adam_input,sample_bye_a
 python main.py --judge sample_safe_unsafe             # lightweight debug judge
 python main.py --judge strongreject                   # continuous harmful score
 python main.py --judge harmbench_mistral_7b_val_cls   # binary validation classifier
-python main.py --judge jailbreak_bench_llama8b        # local Llama 3 8B classifier
+python main.py --judge jbb_refusal_llama3_8b          # refusal classification
 python main.py --dry-run                              # no Ollama, tests wiring
 ```
+
+## Final evaluation matrix
+
+Refusal and harmful-behavior success are deliberately reported separately:
+
+| Prompt set | Judge | Final metric |
+| --- | --- | --- |
+| Harmful JBB | HarmBench Mistral | Behavior-level attack success rate |
+| Harmful JBB | JBB refusal judge | No-refusal rate |
+| Benign JBB | JBB refusal judge | False-refusal / over-blocking rate |
+
+A non-refusal is not automatically a successful attack. The report therefore
+also counts responses that did not refuse but still failed HarmBench.
+
+Run the complete attack/defense experiment, including benign no-attack
+usability cells, with:
+
+```powershell
+.venv\Scripts\python.exe run_attack_defense_matrix.py
+```
+
+The default experiment is 30 cells: four attacks × six defense conditions on
+harmful prompts, plus six benign no-attack usability cells. The sixth
+condition is the proposal-aligned input → generation → output stack
+`perplexity,smoothllm,llama_guard_output`.
+
+Ordinary target generations use a 512-token limit. DeepInception and its
+`template` alias use 2048 tokens because the nested-scene response needs more
+room to reach its final layer. The same per-attack limit applies to SmoothLLM's
+internal target generations.
+
+The no-flag default uses a paired 50-harmful/50-benign midterm set sampled from
+alternating indices of the full dataset. Use `--quick` for a 10/10 smoke test or
+`--full` for all 100/100 prompts. Every cell writes directly to a deterministic
+UTF-8 checkpoint, and the manifest is updated after each cell.
+If a run is interrupted, resume it without regenerating completed responses:
+
+```powershell
+.venv\Scripts\python.exe run_attack_defense_matrix.py `
+  --quick `
+  --resume `
+  --output-dir outputs\matrix-YYYYMMDD-HHMMSS-ID
+```
+
+The resume command must use the same model, provider, quick/full setting,
+attacks, defenses, and judges. It validates row metadata, settings, prompt
+hashes, and the exact cached prompt prefix before continuing. Checkpoints that
+do not have a schema-v2 manifest are not reused because their decoding and
+defense settings cannot be proven; they remain untouched while new `-v2.csv`
+checkpoints are produced. The final evaluator also resumes its authoritative
+`evaluated_rows.csv`, so a judge failure does not discard completed labels.
+
+To evaluate already cached run CSVs without regenerating target responses:
+
+```powershell
+.venv\Scripts\python.exe scripts\evaluate_matrix.py `
+  outputs\run-jailbreakbench_harmful_100-....csv `
+  outputs\run-jailbreakbench_benign_100-....csv
+```
+
+Add `--resume --output-dir PATH` to that evaluator command to validate and
+continue a partial evaluation report. Add `--force` only when deliberately
+re-evaluating enabled judge labels with the currently configured provenance.
+
+Each evaluation directory contains:
+
+- `manifest.json`: prompt hashes, target/PAIR settings, final-judge provider,
+  code revision/dirty status, configured failure policies, deterministic cell
+  paths, and live progress.
+- `evaluated_rows.csv`: every prompt/response, both labels, scores, provenance,
+  timings, and the full 2x2 behavior-success/refusal result.
+- `experiment_matrix.csv`: one statistics row per observed model × attack ×
+  defense × prompt-set run, including duplicate/completion checks, latency
+  versus the matching no-defense baseline, and stack-versus-best-single ASR.
+- `summary.md`: a numbered presentation-friendly digest; the same list is
+  printed in the terminal. It includes latency and defense-stack comparisons.
+
+Perplexity and Llama Guard use the `raise` failure policy by default for
+research runs. If either defense cannot load or classify, the cell stops with
+its completed rows checkpointed instead of silently counting a fail-open path
+as a valid observation.
 
 ## Adding real components later
 
@@ -150,6 +252,13 @@ Nothing in `pipeline.py` or `main.py` changes when you do.
 
 ## Scripts
 
+- `run_attack_defense_matrix.py` — runs the full research attack × defense
+  matrix on harmful prompts plus no-attack benign usability cells, caches each
+  response once, and then uses HarmBench plus the JBB refusal judge. Repeat
+  `--judge` to select a subset explicitly. Use
+  `--quick` for paired 10-prompt smoke batches. Repeat `--defense` to select
+  matrix entries; comma-separated defense names form an ordered stack. Use
+  `--resume --output-dir PATH` to continue a validated checkpoint.
 - `scripts/pull_models.py` — pulls every configured Ollama target/support model.
 - `scripts/prefetch_strongreject.py` — downloads and smoke-tests the pinned
   StrongREJECT adapter and Gemma base.
@@ -157,6 +266,10 @@ Nothing in `pipeline.py` or `main.py` changes when you do.
   HarmBench Mistral validation classifier.
 - `scripts/judge_csv.py` — applies a judge to cached responses without
   regenerating target-model output; it always writes a new CSV.
+- `scripts/evaluate_matrix.py` — adds the selected final labels to cached runs
+  and writes the row-level CSV, aggregate matrix CSV, and digest.
+- `scripts/fetch_jailbreakbench_prompts.py` — recreates the 100- and 10-goal
+  harmful/benign batches from a pinned official JBB dataset revision.
 - `scripts/run_readme_examples.sh` — runs the lightweight README examples.
 - `scripts/script.sh` — runs the attack/defense combinations.
 
@@ -171,9 +284,6 @@ Run the complete suite with:
 The tests use fake evaluators/models for heavyweight paths. They check attack
 formatting, registry/default selection, pairwise judge wiring, score parsing,
 model revision pins, deterministic target settings, one-time attack execution,
-CSV checkpoint/re-judging behavior, and Ollama VRAM unloading. Separate
+atomic/resumable UTF-8 checkpoints, matrix progress manifests, generation-stage
+response voting, CSV re-judging behavior, and Ollama VRAM unloading. Separate
 prefetch scripts provide the real checkpoint smoke tests.
-
-## ToDo
-
-- Figure out the prompts to use

@@ -30,6 +30,14 @@ def make_defense(score=10.0, threshold=10.0, **kwargs):
     return PerplexityDefense(scorer=scorer, threshold=threshold, **kwargs), scorer
 
 
+def test_dry_run_does_not_call_the_configured_scorer():
+    defense, scorer = make_defense()
+    configured = defense.for_run("unused", dry_run=True)
+
+    assert configured.apply("prompt") == "prompt"
+    assert scorer.texts == []
+
+
 @pytest.mark.parametrize("score", [9.9, 10.0])
 def test_score_at_or_below_threshold_is_allowed(score):
     defense, scorer = make_defense(score=score)

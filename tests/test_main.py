@@ -2,6 +2,7 @@ import argparse
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
+from uuid import uuid4
 
 import config
 import main
@@ -65,6 +66,8 @@ class MainIntegrationTests(unittest.TestCase):
             judge="fake",
             batch="general",
             dry_run=dry_run,
+            output_csv=None,
+            resume=False,
         )
 
     def test_attack_is_applied_once_and_exact_output_reaches_chain(self) -> None:
@@ -82,7 +85,6 @@ class MainIntegrationTests(unittest.TestCase):
             patch.object(main, "build_response_chain", return_value=chain) as build_chain,
             patch.object(main, "_load_langfuse_handler", return_value=(None, None)),
             patch.object(main, "_write_run_csv", write_csv),
-            patch.object(main, "_append_run_csv_row") as append_row,
             patch.object(main, "load_batch") as load_batch,
         ):
             main.main()
@@ -90,11 +92,17 @@ class MainIntegrationTests(unittest.TestCase):
         self.assertEqual(attack.calls, 1)
         self.assertEqual(chain.inputs, ["|attack-1"])
         self.assertEqual(defense.configure_calls, [("chosen-model", True)])
-        build_chain.assert_called_once_with([defense], "chosen-model", dry_run=True)
+        build_chain.assert_called_once_with(
+            [defense],
+            "chosen-model",
+            dry_run=True,
+            max_tokens=config.MODEL_MAX_TOKENS,
+        )
         load_batch.assert_not_called()
         self.assertEqual(judge.calls, 0)
-        self.assertEqual(append_row.call_args.args[1]["attacked_input"], "|attack-1")
-        self.assertEqual(write_csv.call_count, 2)
+        checkpoint_rows = write_csv.call_args_list[1].args[0]
+        self.assertEqual(checkpoint_rows[0]["attacked_input"], "|attack-1")
+        self.assertEqual(write_csv.call_count, 3)
 
     def test_short_judge_result_list_fails_after_checkpoint(self) -> None:
         attack = _CountingAttack()
@@ -110,12 +118,11 @@ class MainIntegrationTests(unittest.TestCase):
             patch.object(main, "build_response_chain", return_value=chain),
             patch.object(main, "_load_langfuse_handler", return_value=(None, None)),
             patch.object(main, "_write_run_csv", return_value=Path("cached.csv")),
-            patch.object(main, "_append_run_csv_row") as append_row,
         ):
             with self.assertRaisesRegex(RuntimeError, "responses remain cached"):
                 main.main()
 
-        append_row.assert_called_once()
+        self.assertEqual(attack.calls, 1)
 
     def test_gpu_judge_unloads_selected_target_after_checkpoint(self) -> None:
         attack = _CountingAttack()
@@ -132,12 +139,95 @@ class MainIntegrationTests(unittest.TestCase):
             patch.object(main, "build_response_chain", return_value=chain),
             patch.object(main, "_load_langfuse_handler", return_value=(None, None)),
             patch.object(main, "_write_run_csv", return_value=Path("cached.csv")),
-            patch.object(main, "_append_run_csv_row"),
             patch.object(main, "_unload_ollama_model") as unload,
         ):
             main.main()
 
         unload.assert_called_once_with("chosen-model")
+
+
+class RunCheckpointTests(unittest.TestCase):
+    def test_unicode_checkpoint_round_trips_as_a_valid_resume_prefix(self) -> None:
+        path = Path(main.__file__).resolve().parent / "outputs" / f"checkpoint-test-{uuid4().hex}.csv"
+        try:
+            row = {
+                "judge_provider": "",
+                "judge_model": "",
+                "batch": "batch",
+                "prompt_set": "harmful",
+                "prompt_index": "1",
+                "input": "prompt one",
+                "attacked_input": "attacked",
+                "output": "response 🌟",
+                "judge_label": "",
+                "judge_score": "",
+                "attack_latency_seconds": "0.1",
+                "response_pipeline_latency_seconds": "0.2",
+                "latency_seconds": "0.3",
+                "judge_batch_latency_seconds": "",
+            }
+            main._write_run_csv(
+                [row],
+                "attack",
+                ["defense"],
+                "judge",
+                "model",
+                "batch",
+                csv_path=path,
+            )
+
+            loaded = main._load_resume_rows(
+                path,
+                ["prompt one", "prompt two"],
+                "attack",
+                ["defense"],
+                "judge",
+                "model",
+                "batch",
+                "harmful",
+            )
+
+            self.assertEqual(loaded[0]["output"], "response 🌟")
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_resume_rejects_a_different_prompt_batch(self) -> None:
+        path = Path(main.__file__).resolve().parent / "outputs" / f"checkpoint-test-{uuid4().hex}.csv"
+        try:
+            row = {
+                field: "" for field in main.RUN_FIELDNAMES
+            }
+            row.update(
+                {
+                    "batch": "batch",
+                    "prompt_set": "harmful",
+                    "prompt_index": "1",
+                    "input": "old prompt",
+                }
+            )
+            main._write_run_csv(
+                [row],
+                "attack",
+                ["defense"],
+                "judge",
+                "model",
+                "batch",
+                csv_path=path,
+            )
+
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                main._load_resume_rows(
+                    path,
+                    ["new prompt"],
+                    "attack",
+                    ["defense"],
+                    "judge",
+                    "model",
+                    "batch",
+                    "harmful",
+                )
+        finally:
+            path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

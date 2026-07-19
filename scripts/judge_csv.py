@@ -17,6 +17,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from judges import JUDGES  # noqa: E402
 from judges.base import Judge  # noqa: E402
 from judges.runtime import evaluate_judge_batch, judge_requires_target_unload  # noqa: E402
+from evaluation_reporting import format_judge_digest  # noqa: E402
 
 
 def _default_output_path(input_path: Path, judge_name: str) -> Path:
@@ -74,13 +75,22 @@ def judge_csv(input_path: Path, output_path: Path, judge: Judge) -> Path:
             f"Judge '{judge.name}' returned {len(results)} result(s) for {len(rows)} row(s)"
         )
 
-    result_columns = ["judge", "judge_label", "judge_score", "judge_batch_latency_seconds"]
+    result_columns = [
+        "judge",
+        "judge_provider",
+        "judge_model",
+        "judge_label",
+        "judge_score",
+        "judge_batch_latency_seconds",
+    ]
     for column in result_columns:
         if column not in fieldnames:
             fieldnames.append(column)
 
     for row, result in zip(rows, results):
         row["judge"] = judge.name
+        row["judge_provider"] = str(getattr(judge, "provider", ""))
+        row["judge_model"] = str(getattr(judge, "model_name", ""))
         row["judge_label"] = result.label or ""
         row["judge_score"] = "" if result.score is None else f"{result.score:.6f}"
         row["judge_batch_latency_seconds"] = f"{judge_latency_seconds:.3f}"
@@ -90,6 +100,10 @@ def judge_csv(input_path: Path, output_path: Path, judge: Judge) -> Path:
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+    print()
+    for line in format_judge_digest(judge.name, results):
+        print(line)
 
     return output_path
 

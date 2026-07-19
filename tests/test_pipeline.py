@@ -57,6 +57,20 @@ class PipelineTests(unittest.TestCase):
             },
         )
 
+    def test_real_model_accepts_an_attack_specific_token_budget(self) -> None:
+        captured: dict[str, object] = {}
+        fake_module = types.ModuleType("langchain_ollama")
+
+        def fake_chat_ollama(**kwargs):
+            captured.update(kwargs)
+            return RunnableLambda(lambda value: value)
+
+        fake_module.ChatOllama = fake_chat_ollama
+        with patch.dict(sys.modules, {"langchain_ollama": fake_module}):
+            _make_model("chosen-model", dry_run=False, max_tokens=2048)
+
+        self.assertEqual(captured["num_predict"], 2048)
+
 
 if __name__ == "__main__":
     unittest.main()

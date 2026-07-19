@@ -9,6 +9,7 @@ Examples:
 
 import argparse
 import csv
+import os
 import subprocess
 import time
 from datetime import datetime
@@ -17,8 +18,10 @@ from uuid import uuid4
 
 import config
 from attacks import ATTACKS
+from console_io import configure_utf8_stdio
 from defenses import DEFENSES
 from defenses.block import DefenseBlocked
+from evaluation_reporting import format_judge_digest
 from judges import JUDGES
 from judges.runtime import (
     JudgeResult,
@@ -27,6 +30,27 @@ from judges.runtime import (
 )
 from pipeline import build_response_chain
 from prompts import available_batches, load_batch
+
+RUN_FIELDNAMES = [
+    "attack",
+    "defenses",
+    "judge",
+    "judge_provider",
+    "judge_model",
+    "model",
+    "batch",
+    "prompt_set",
+    "prompt_index",
+    "input",
+    "attacked_input",
+    "output",
+    "judge_label",
+    "judge_score",
+    "attack_latency_seconds",
+    "response_pipeline_latency_seconds",
+    "latency_seconds",
+    "judge_batch_latency_seconds",
+]
 
 
 def _parse_defense_names(raw_value: str) -> list[str]:
@@ -44,7 +68,7 @@ def _parse_defense_names(raw_value: str) -> list[str]:
     return names
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("prompt", nargs="?", help="A single prompt. Omit to run a batch.")
     parser.add_argument(
@@ -66,7 +90,20 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Echo the target prompt; selected defenses still run.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--output-csv",
+        type=Path,
+        help="Write checkpoints and the completed run to this exact CSV path.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume a compatible checkpoint supplied with --output-csv.",
+    )
+    args = parser.parse_args(argv)
+    if args.resume and args.output_csv is None:
+        parser.error("--resume requires --output-csv")
+    return args
 
 
 def _load_langfuse_handler() -> tuple[object | None, object | None]:
@@ -109,85 +146,95 @@ def _write_run_csv(
         run_id = uuid4().hex[:8]
         csv_path = outputs_dir / f"run-{batch_name or 'single'}-{timestamp}-{run_id}.csv"
 
-    fieldnames = [
-        "attack",
-        "defenses",
-        "judge",
-        "model",
-        "input",
-        "attacked_input",
-        "output",
-        "judge_label",
-        "judge_score",
-        "attack_latency_seconds",
-        "response_pipeline_latency_seconds",
-        "latency_seconds",
-        "judge_batch_latency_seconds",
-    ]
-    with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in run_rows:
-            writer.writerow(
-                {
-                    "attack": attack_name,
-                    "defenses": ",".join(defense_names),
-                    "judge": judge_name,
-                    "model": model_name,
-                    "input": row["input"],
-                    "attacked_input": row["attacked_input"],
-                    "output": row["output"],
-                    "judge_label": row["judge_label"],
-                    "judge_score": row["judge_score"],
-                    "attack_latency_seconds": row["attack_latency_seconds"],
-                    "response_pipeline_latency_seconds": row[
-                        "response_pipeline_latency_seconds"
-                    ],
-                    "latency_seconds": row["latency_seconds"],
-                    "judge_batch_latency_seconds": row["judge_batch_latency_seconds"],
-                }
+    csv_path = csv_path.resolve()
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = csv_path.with_name(
+        f".{csv_path.name}.{uuid4().hex[:8]}.tmp"
+    )
+    try:
+        with temporary_path.open("w", newline="", encoding="utf-8") as csv_file:
+            writer = csv.DictWriter(
+                csv_file,
+                fieldnames=RUN_FIELDNAMES,
+                extrasaction="ignore",
             )
+            writer.writeheader()
+            for row in run_rows:
+                writer.writerow(
+                    {
+                        **row,
+                        # Canonical run metadata must not be overridden by a
+                        # row loaded from an existing checkpoint.
+                        "attack": attack_name,
+                        "defenses": ",".join(defense_names),
+                        "judge": judge_name,
+                        "model": model_name,
+                    }
+                )
+            csv_file.flush()
+            os.fsync(csv_file.fileno())
+        os.replace(temporary_path, csv_path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
 
     return csv_path
 
 
-def _append_run_csv_row(
+def _load_resume_rows(
     csv_path: Path,
-    row: dict[str, str],
+    prompts: list[str],
     attack_name: str,
     defense_names: list[str],
     judge_name: str,
     model_name: str,
-) -> None:
-    """Append one completed target response to the pre-judge checkpoint."""
-    with csv_path.open("a", newline="", encoding="utf-8") as csv_file:
-        writer = csv.DictWriter(
-            csv_file,
-            fieldnames=[
-                "attack",
-                "defenses",
-                "judge",
-                "model",
-                "input",
-                "attacked_input",
-                "output",
-                "judge_label",
-                "judge_score",
-                "attack_latency_seconds",
-                "response_pipeline_latency_seconds",
-                "latency_seconds",
-                "judge_batch_latency_seconds",
-            ],
+    batch_name: str,
+    prompt_set: str,
+) -> list[dict[str, str]]:
+    """Load and validate a checkpoint that is a contiguous prompt prefix."""
+    with csv_path.open(newline="", encoding="utf-8") as csv_file:
+        reader = csv.DictReader(csv_file)
+        fieldnames = set(reader.fieldnames or [])
+        missing = set(RUN_FIELDNAMES).difference(fieldnames)
+        if missing:
+            raise ValueError(
+                f"Resume checkpoint {csv_path} is missing column(s): "
+                f"{', '.join(sorted(missing))}"
+            )
+        rows = [dict(row) for row in reader]
+
+    if len(rows) > len(prompts):
+        raise ValueError(
+            f"Resume checkpoint {csv_path} has {len(rows)} rows for only "
+            f"{len(prompts)} prompts"
         )
-        writer.writerow(
-            {
-                "attack": attack_name,
-                "defenses": ",".join(defense_names),
-                "judge": judge_name,
-                "model": model_name,
-                **row,
-            }
-        )
+
+    expected_metadata = {
+        "attack": attack_name,
+        "defenses": ",".join(defense_names),
+        "judge": judge_name,
+        "model": model_name,
+        "batch": batch_name,
+        "prompt_set": prompt_set,
+    }
+    for index, row in enumerate(rows, 1):
+        for field, expected in expected_metadata.items():
+            if row.get(field, "") != expected:
+                raise ValueError(
+                    f"Resume checkpoint {csv_path} row {index} has "
+                    f"{field}={row.get(field)!r}; expected {expected!r}"
+                )
+        if row.get("prompt_index", "") != str(index):
+            raise ValueError(
+                f"Resume checkpoint {csv_path} is not a contiguous prompt prefix: "
+                f"row {index} has prompt_index={row.get('prompt_index')!r}"
+            )
+        if row.get("input", "") != prompts[index - 1]:
+            raise ValueError(
+                f"Resume checkpoint {csv_path} row {index} does not match "
+                "the selected prompt batch"
+            )
+    return rows
 
 
 def _unload_ollama_model(model_name: str) -> None:
@@ -203,12 +250,40 @@ def _unload_ollama_model(model_name: str) -> None:
         print(f"warning: could not unload Ollama model '{model_name}': {detail}")
 
 
-def _configure_defense_for_run(defense: object, model_name: str, dry_run: bool) -> object:
+def _configure_defense_for_run(
+    defense: object,
+    model_name: str,
+    dry_run: bool,
+    model_max_tokens: int,
+) -> object:
     """Use an optional concrete run hook without expanding defenses/base.py."""
     for_run = getattr(defense, "for_run", None)
     if callable(for_run):
+        if getattr(defense, "name", "") == "smoothllm":
+            return for_run(
+                model_name,
+                dry_run=dry_run,
+                max_tokens=model_max_tokens,
+            )
         return for_run(model_name, dry_run=dry_run)
     return defense
+
+
+def _configure_attack_for_run(attack: object, model_name: str, dry_run: bool) -> object:
+    """Bind attacks with internal model calls to the selected target model."""
+    for_run = getattr(attack, "for_run", None)
+    if callable(for_run):
+        return for_run(model_name, dry_run=dry_run)
+    return attack
+
+
+def _prompt_set_name(batch_name: str | None) -> str:
+    normalized = (batch_name or "").lower()
+    if "jailbreakbench_harmful" in normalized:
+        return "harmful"
+    if "jailbreakbench_benign" in normalized:
+        return "benign"
+    return "unknown"
 
 
 def _invoke_chain(chain, prompt: str, invoke_kwargs: dict) -> str:
@@ -220,38 +295,81 @@ def _invoke_chain(chain, prompt: str, invoke_kwargs: dict) -> str:
 
 
 def main() -> None:
+    configure_utf8_stdio()
     args = parse_args()
 
-    attack = ATTACKS[args.attack]
+    attack = _configure_attack_for_run(
+        ATTACKS[args.attack], args.model, args.dry_run
+    )
+    model_max_tokens = config.model_max_tokens_for_attack(attack.name)
     defenses = [
-        _configure_defense_for_run(DEFENSES[name], args.model, args.dry_run)
+        _configure_defense_for_run(
+            DEFENSES[name],
+            args.model,
+            args.dry_run,
+            model_max_tokens,
+        )
         for name in args.defense
     ]
     judge = JUDGES[args.judge]
 
     # Apply the attack once in the loop so its exact output can be cached.
     # This chain handles the remaining defenses -> model -> defenses stages.
-    response_chain = build_response_chain(defenses, args.model, dry_run=args.dry_run)
+    response_chain = build_response_chain(
+        defenses,
+        args.model,
+        dry_run=args.dry_run,
+        max_tokens=model_max_tokens,
+    )
     langfuse_client, langfuse_handler = _load_langfuse_handler()
 
     single_prompt = args.prompt is not None
     prompts = [args.prompt] if single_prompt else load_batch(args.batch)
     source = "single prompt" if single_prompt else f"batch '{args.batch}' ({len(prompts)} prompts)"
+    batch_name = "single" if single_prompt else args.batch
+    prompt_set = _prompt_set_name(None if single_prompt else args.batch)
+    judge_provider = str(getattr(judge, "provider", ""))
+    judge_model = str(getattr(judge, "model_name", ""))
 
     defense_summary = ", ".join(f"{defense.name}:{defense.stage}" for defense in defenses)
     print(f"attack={attack.name}  defenses=[{defense_summary}]  judge={judge.name}  model={args.model}")
     print(f"running: {source}\n")
 
-    run_rows: list[dict[str, str]] = []
-    csv_path = _write_run_csv(
-        run_rows,
-        attack.name,
-        args.defense,
-        judge.name,
-        args.model,
-        batch_name=None if single_prompt else args.batch,
-    )
-    for i, prompt in enumerate(prompts, 1):
+    requested_csv = args.output_csv.resolve() if args.output_csv is not None else None
+    if requested_csv is not None and requested_csv.exists() and not args.resume:
+        raise FileExistsError(
+            f"Output CSV already exists; pass --resume to validate and continue it: "
+            f"{requested_csv}"
+        )
+
+    if args.resume and requested_csv is not None and requested_csv.exists():
+        run_rows = _load_resume_rows(
+            requested_csv,
+            prompts,
+            attack.name,
+            args.defense,
+            judge.name,
+            args.model,
+            batch_name,
+            prompt_set,
+        )
+        csv_path = requested_csv
+        print(f"resuming {len(run_rows)}/{len(prompts)} cached response(s)")
+    else:
+        run_rows: list[dict[str, str]] = []
+        csv_path = _write_run_csv(
+            run_rows,
+            attack.name,
+            args.defense,
+            judge.name,
+            args.model,
+            batch_name=None if single_prompt else args.batch,
+            csv_path=requested_csv,
+        )
+    print(f"checkpoint csv: {csv_path}")
+
+    for i in range(len(run_rows) + 1, len(prompts) + 1):
+        prompt = prompts[i - 1]
         print(f"--- [{i}] {prompt}")
         invoke_kwargs = (
             {
@@ -272,6 +390,11 @@ def main() -> None:
         response_latency_seconds = time.perf_counter() - response_start_time
         latency_seconds = attack_latency_seconds + response_latency_seconds
         row = {
+            "judge_provider": judge_provider,
+            "judge_model": judge_model,
+            "batch": batch_name,
+            "prompt_set": prompt_set,
+            "prompt_index": str(i),
             "input": prompt,
             "attacked_input": attacked_prompt,
             "output": output_text,
@@ -283,13 +406,14 @@ def main() -> None:
             "judge_batch_latency_seconds": "",
         }
         run_rows.append(row)
-        _append_run_csv_row(
-            csv_path,
-            row,
+        _write_run_csv(
+            run_rows,
             attack.name,
             args.defense,
             judge.name,
             args.model,
+            batch_name=None if single_prompt else args.batch,
+            csv_path=csv_path,
         )
         print(output_text)
         print(
@@ -329,10 +453,18 @@ def main() -> None:
         )
 
     for index, (row, result) in enumerate(zip(run_rows, judge_results), 1):
+        # A resumed run is judged as one batch; provenance must describe the
+        # labels just written, not the process that created cached responses.
+        row["judge_provider"] = judge_provider
+        row["judge_model"] = judge_model
         row["judge_label"] = result.label or ""
         row["judge_score"] = "" if result.score is None else f"{result.score:.6f}"
         row["judge_batch_latency_seconds"] = f"{judge_latency_seconds:.3f}"
         print(f"judge [{index}] {result.display()}")
+
+    print()
+    for line in format_judge_digest(judge.name, judge_results):
+        print(line)
 
     _write_run_csv(
         run_rows,

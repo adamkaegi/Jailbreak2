@@ -33,7 +33,11 @@ from attacks.base import Attack
 from defenses.base import Defense
 
 
-def _make_model(model_name: str, dry_run: bool) -> Runnable:
+def _make_model(
+    model_name: str,
+    dry_run: bool,
+    max_tokens: int | None = None,
+) -> Runnable:
     """Return the real Ollama model, or a stub that just echoes the prompt.
 
     --dry-run lets the rest of the chain be exercised without an Ollama
@@ -46,11 +50,12 @@ def _make_model(model_name: str, dry_run: bool) -> Runnable:
 
     from langchain_ollama import ChatOllama  # imported lazily: not needed for --dry-run
 
+    resolved_max_tokens = config.MODEL_MAX_TOKENS if max_tokens is None else max_tokens
     return ChatOllama(
         model=model_name,
         temperature=config.MODEL_TEMPERATURE,
         seed=config.MODEL_SEED,
-        num_predict=config.MODEL_MAX_TOKENS,
+        num_predict=resolved_max_tokens,
     )
 
 
@@ -68,6 +73,7 @@ def build_response_chain(
     defenses: Sequence[Defense],
     model_name: str,
     dry_run: bool = False,
+    max_tokens: int | None = None,
 ) -> Runnable:
     """Wire defenses and a model after an attack has already been applied.
 
@@ -76,18 +82,35 @@ def build_response_chain(
     twice.
     """
     input_defenses = [d for d in defenses if d.stage == "input"]
+    generation_defenses = [d for d in defenses if d.stage == "generation"]
     output_defenses = [d for d in defenses if d.stage == "output"]
 
+    if len(generation_defenses) > 1:
+        names = ", ".join(defense.name for defense in generation_defenses)
+        raise ValueError(f"Only one generation-stage defense is supported: {names}")
+
     prompt_template = ChatPromptTemplate.from_messages([("user", "{text}")])
-    model = _make_model(model_name, dry_run)
 
     chain = RunnableLambda(lambda text: text)
     for defense in input_defenses:
         chain = chain | _defense_step(defense)
 
-    # ChatPromptTemplate needs a dict of template variables, so re-wrap the
-    # plain string as {"text": ...} before it reaches the template.
-    chain = chain | RunnableLambda(lambda text: {"text": text}) | prompt_template | model | StrOutputParser()
+    if generation_defenses:
+        # A generation-stage defense owns the target calls and returns the
+        # selected assistant response. It replaces the ordinary one-call model
+        # stage, while output defenses still run afterward.
+        chain = chain | _defense_step(generation_defenses[0])
+    else:
+        model = _make_model(model_name, dry_run, max_tokens=max_tokens)
+        # ChatPromptTemplate needs a dict of template variables, so re-wrap the
+        # plain string as {"text": ...} before it reaches the template.
+        chain = (
+            chain
+            | RunnableLambda(lambda text: {"text": text})
+            | prompt_template
+            | model
+            | StrOutputParser()
+        )
 
     for defense in output_defenses:
         chain = chain | _defense_step(defense)
@@ -106,4 +129,5 @@ def build_chain(
         defenses,
         model_name,
         dry_run=dry_run,
+        max_tokens=config.model_max_tokens_for_attack(attack.name),
     )

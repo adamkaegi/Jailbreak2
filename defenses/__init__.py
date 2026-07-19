@@ -8,8 +8,11 @@ from .perplexity import PerplexityDefense
 from .llama_guard import LlamaGuardInputDefense, LlamaGuardOutputDefense
 
 # Available defenses (comma-separate multiple choices on the CLI):
-# - smoothllm: perturbs and screens input prompts with the selected target model.
+# - smoothllm: generates perturbed responses and selects from the majority class.
 # - self_reminder: adds a safety reminder around the input prompt.
+# - perplexity: blocks high-perplexity input prompts.
+# - llama_guard_input: blocks prompts classified unsafe by Llama Guard.
+# - llama_guard_output: replaces outputs classified unsafe by Llama Guard.
 # - sample_bye_adam_input: original input-stage wiring example.
 # - sample_bye_adam_output: original output-stage wiring example.
 # - none: no-op baseline.
