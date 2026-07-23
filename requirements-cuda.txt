@@ -1,0 +1,5 @@
+--extra-index-url https://download.pytorch.org/whl/cu128
+-r requirements.txt
+
+# Tested on Windows/Python 3.13 with the project's RTX 5080.
+torch==2.11.0+cu128

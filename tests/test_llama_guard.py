@@ -81,6 +81,15 @@ def test_safe_input_is_preserved():
     assert classifier.conversations[0][-1]["content"] == "hello"
 
 
+def test_guard_dry_run_does_not_call_the_configured_classifier():
+    classifier = FakeClassifier(decision("unsafe", ["S1"]))
+    defense = LlamaGuardInputDefense(classifier=classifier)
+    configured = defense.for_run("unused", dry_run=True)
+
+    assert configured.apply("hello") == "hello"
+    assert classifier.conversations == []
+
+
 def test_unsafe_input_is_blocked_with_categories():
     classifier = FakeClassifier(decision("unsafe", ["S5"]))
     defense = LlamaGuardInputDefense(classifier=classifier)

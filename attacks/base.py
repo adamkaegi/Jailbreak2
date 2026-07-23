@@ -2,7 +2,11 @@ from abc import ABC, abstractmethod
 
 
 class Attack(ABC):
-    """An attack transforms the user prompt before it reaches the model."""
+    """Context-only interface template for concrete attack implementations.
+
+    ``Attack`` itself is never registered or run. Files such as ``none.py``
+    and ``deepinception.py`` subclass it and provide the executable behavior.
+    """
 
     name: str
 

@@ -144,6 +144,16 @@ class _LlamaGuardDefense(Defense):
         self.failure_policy = failure_policy
         self.blocked_response = blocked_response
 
+    def for_run(self, model_name: str, dry_run: bool = False):
+        """Avoid calling Ollama during an offline pipeline wiring check."""
+        if not dry_run:
+            return self
+        return type(self)(
+            classifier=_DryRunGuardClassifier(),
+            failure_policy=self.failure_policy,
+            blocked_response=self.blocked_response,
+        )
+
     def _action(self, decision: GuardDecision) -> str:
         if decision.label == "unsafe":
             return "block"
@@ -201,6 +211,13 @@ class LlamaGuardOutputDefense(_LlamaGuardDefense):
         conversation = build_output_guard_conversation(text)
         decision = self.classifier.classify_conversation(conversation)
         return self._apply_decision(text, decision)
+
+
+class _DryRunGuardClassifier:
+    model_name = "dry-run"
+
+    def classify_conversation(self, conversation: list[dict[str, str]]) -> GuardDecision:
+        return GuardDecision("safe", [], "safe", "dry_run", "", model=self.model_name)
 
 
 def _response_stats(response: Any, latency_s: float) -> dict[str, float | int]:

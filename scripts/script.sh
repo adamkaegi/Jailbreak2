@@ -11,4 +11,3 @@ python main.py --batch prompts3 --defense llama_guard_input
 python main.py --batch prompts3 --defense llama_guard_output
 python main.py --batch prompts3 --attack gcg
 python main.py --batch prompts3 --attack pair
-

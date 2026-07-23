@@ -28,11 +28,16 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable, RunnableLambda
 
+import config
 from attacks.base import Attack
 from defenses.base import Defense
 
 
-def _make_model(model_name: str, dry_run: bool) -> Runnable:
+def _make_model(
+    model_name: str,
+    dry_run: bool,
+    max_tokens: int | None = None,
+) -> Runnable:
     """Return the real Ollama model, or a stub that just echoes the prompt.
 
     --dry-run lets the rest of the chain be exercised without an Ollama
@@ -45,7 +50,13 @@ def _make_model(model_name: str, dry_run: bool) -> Runnable:
 
     from langchain_ollama import ChatOllama  # imported lazily: not needed for --dry-run
 
-    return ChatOllama(model=model_name)
+    resolved_max_tokens = config.MODEL_MAX_TOKENS if max_tokens is None else max_tokens
+    return ChatOllama(
+        model=model_name,
+        temperature=config.MODEL_TEMPERATURE,
+        seed=config.MODEL_SEED,
+        num_predict=resolved_max_tokens,
+    )
 
 
 def _defense_step(defense: Defense) -> Runnable:
@@ -58,31 +69,65 @@ def _defense_step(defense: Defense) -> Runnable:
     return RunnableLambda(lambda text, defense=defense: defense.apply(text))
 
 
+def build_response_chain(
+    defenses: Sequence[Defense],
+    model_name: str,
+    dry_run: bool = False,
+    max_tokens: int | None = None,
+) -> Runnable:
+    """Wire defenses and a model after an attack has already been applied.
+
+    Call ``.invoke(attacked_prompt)`` on the result. This lets callers cache
+    the exact attack output without applying stateful or stochastic attacks
+    twice.
+    """
+    input_defenses = [d for d in defenses if d.stage == "input"]
+    generation_defenses = [d for d in defenses if d.stage == "generation"]
+    output_defenses = [d for d in defenses if d.stage == "output"]
+
+    if len(generation_defenses) > 1:
+        names = ", ".join(defense.name for defense in generation_defenses)
+        raise ValueError(f"Only one generation-stage defense is supported: {names}")
+
+    prompt_template = ChatPromptTemplate.from_messages([("user", "{text}")])
+
+    chain = RunnableLambda(lambda text: text)
+    for defense in input_defenses:
+        chain = chain | _defense_step(defense)
+
+    if generation_defenses:
+        # A generation-stage defense owns the target calls and returns the
+        # selected assistant response. It replaces the ordinary one-call model
+        # stage, while output defenses still run afterward.
+        chain = chain | _defense_step(generation_defenses[0])
+    else:
+        model = _make_model(model_name, dry_run, max_tokens=max_tokens)
+        # ChatPromptTemplate needs a dict of template variables, so re-wrap the
+        # plain string as {"text": ...} before it reaches the template.
+        chain = (
+            chain
+            | RunnableLambda(lambda text: {"text": text})
+            | prompt_template
+            | model
+            | StrOutputParser()
+        )
+
+    for defense in output_defenses:
+        chain = chain | _defense_step(defense)
+
+    return chain
+
+
 def build_chain(
     attack: Attack,
     defenses: Sequence[Defense],
     model_name: str,
     dry_run: bool = False,
 ) -> Runnable:
-    """Wire one attack, any number of defenses, and a model into one Runnable.
-
-    Call `.invoke(prompt_text)` on the result to run a prompt end to end.
-    """
-    input_defenses = [d for d in defenses if d.stage == "input"]
-    output_defenses = [d for d in defenses if d.stage == "output"]
-
-    prompt_template = ChatPromptTemplate.from_messages([("user", "{text}")])
-    model = _make_model(model_name, dry_run)
-
-    chain = RunnableLambda(attack.apply)
-    for defense in input_defenses:
-        chain = chain | _defense_step(defense)
-
-    # ChatPromptTemplate needs a dict of template variables, so re-wrap the
-    # plain string as {"text": ...} before it reaches the template.
-    chain = chain | RunnableLambda(lambda text: {"text": text}) | prompt_template | model | StrOutputParser()
-
-    for defense in output_defenses:
-        chain = chain | _defense_step(defense)
-
-    return chain
+    """Wire attack, defenses, and a model into the original public Runnable."""
+    return RunnableLambda(attack.apply) | build_response_chain(
+        defenses,
+        model_name,
+        dry_run=dry_run,
+        max_tokens=config.model_max_tokens_for_attack(attack.name),
+    )

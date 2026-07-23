@@ -199,6 +199,17 @@ class PerplexityDefense(Defense):
             stride=config.PERPLEXITY_STRIDE,
         )
 
+    def for_run(self, model_name: str, dry_run: bool = False) -> "PerplexityDefense":
+        """Avoid loading GPT-2 during an offline pipeline wiring check."""
+        if not dry_run:
+            return self
+        return PerplexityDefense(
+            scorer=_DryRunPerplexityScorer(),
+            threshold=self.threshold,
+            failure_policy=self.failure_policy,
+            blocked_response=self.blocked_response,
+        )
+
     def apply(self, text: str) -> str:
         start = perf_counter()
         result = None
@@ -252,3 +263,12 @@ class PerplexityDefense(Defense):
                 metadata=metadata,
             )
         return text
+
+
+class _DryRunPerplexityScorer:
+    model_name = "dry-run"
+    requested_device = "dry-run"
+    stride = config.PERPLEXITY_STRIDE
+
+    def score(self, text: str) -> PerplexityResult:
+        return PerplexityResult(None, 0, 0, "dry-run")
